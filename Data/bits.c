@@ -18,7 +18,7 @@
  * Instructions to Students:
  *
  * STEP 1: Read the following instructions carefully.
- */
+ 
 
 You will provide your solution to the Data Lab by
 editing the collection of functions in this source file.
@@ -130,6 +130,7 @@ NOTES:
  *      to the coding rules.
  *   2. Use the BDD checker to formally verify that your solutions produce 
  *      the correct answers.
+ */
  */
 
 

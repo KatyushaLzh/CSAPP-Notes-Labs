@@ -1,3 +1,6 @@
+[TOC]
+
+### 写在前面
 规则：对于每个$phase$，你都需要输入一个字符串，使得$explode\_bomb$函数不被运行
 
 在bomb目录下使用`objdump -d bomb > bomb.s`得到反汇编文件$bomb.s$
