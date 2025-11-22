@@ -419,13 +419,6 @@ x=3 y=3 rax=0
 
 通过 `(gdb) x/s 0x4024b0`，我们得到这个地址后面的字符串为 `maduiersnfotvbylSo you think you can stop the bomb with ctrl-c, do you?`
 
-*P.S* 如果你用 `(gdb) x/s 0x4024b0` 结果会是一个彩蛋
-
-`"maduiersnfotvbylSo you think you can stop the bomb with ctrl-c, do you?"
-0x4024f8:       "Curses, you've found the secret phase!"
-0x40251f:       ""
-0x402520:       "But finding it and solving it are quite different..."`
-
 通过 `(gdb) x/s 0x40245e`可以得到目标字符串为 `0x40245e:       "flyers"`
 
 所以我们只需要输入的每个字符的$ASCII$码二进制后4位转换为十进制分别为9,15,14,5,6,7 就行了
@@ -467,6 +460,20 @@ x=3 y=3 rax=0
   40114b:	7e e8                	jle    401135 <phase_6+0x41>
   40114d:	49 83 c5 04          	add    $0x4,%r13
   401151:	eb c1                	jmp    401114 <phase_6+0x20>
+  401153:	
+```
+
+设进入函数时$\%rsp$指向的地址为$p$，由$phase\_2$的分析可知，读入的六个数(设为$a_0$,$a_1$,$a_2$,$a_3$,$a_4$,$a_5$)地址依次分别在$p-80$，$p-76$，$p-72$，$p-68$，$p-60$，$p-64$
+
+此后，$\%rbp$指向了第一个数的地址，检查了这个位置的值，大于6时会爆炸，然后$\%rbx$从$\%r12$的值开始(初始$\%r12$为1)一直到6，检查第$\%rbx$个数是否与$\%rbp$相等，相等则会爆炸
+
+此后，将$\%rbp$指向下一个数，$\%r12$的值增加1，重复上一个步骤，直到$\%r12$的值等于6，即$\%rbp$之后没有其他数
+
+所以当这六个数都小于等于6且互不相等的时候不会爆炸
+
+手动模拟发现，执行完上述指令后$\%rsp$,$\%r14$,$\%r12$,$\%r13$,$\%rbp$,$\%rax$,$\%rbx$的值分别是$p-80$,$p-80$,$6$,$p-60$,$p-60$,$a_6$,$6$
+
+```assembly
   401153:	48 8d 74 24 18       	lea    0x18(%rsp),%rsi
   401158:	4c 89 f0             	mov    %r14,%rax
   40115b:	b9 07 00 00 00       	mov    $0x7,%ecx
@@ -476,6 +483,11 @@ x=3 y=3 rax=0
   401166:	48 83 c0 04          	add    $0x4,%rax
   40116a:	48 39 f0             	cmp    %rsi,%rax
   40116d:	75 f1                	jne    401160 <phase_6+0x6c>
+```
+
+这段指令以$\%rax$为指针，从第一个数开始直到最后一个数，将每个数$a_i$都赋值为$7-a_i$，我们不妨设$b_i = 7 - a_i$
+
+```assembly
   40116f:	be 00 00 00 00       	mov    $0x0,%esi
   401174:	eb 21                	jmp    401197 <phase_6+0xa3>
   401176:	48 8b 52 08          	mov    0x8(%rdx),%rdx
@@ -494,6 +506,44 @@ x=3 y=3 rax=0
   40119f:	b8 01 00 00 00       	mov    $0x1,%eax
   4011a4:	ba d0 32 60 00       	mov    $0x6032d0,%edx
   4011a9:	eb cb                	jmp    401176 <phase_6+0x82>
+```
+
+看不懂，这家伙又在叽里咕噜说些什么呢（
+
+注意到有一个常量地址 `$0x6032d0`，于是我们使用 `(gdb) x/x 0x6032d0 `，发现输出结果为 `0x6032d0 <node1>:   0x0000014c`
+
+这个变量名$node1$有点意思，进一步地，我们使用 `(gdb) x/16x 0x6032d0` 可以发现输出的结果为
+
+![](https://img2024.cnblogs.com/blog/2454100/202511/2454100-20251121220547645-734411928.png)
+
+我们发现，除了$node_6$每个$node_i$的第三个变量都是$node_{i+1}$的地址，可以联想到链表
+
+同时发现每个节点占用4个单位，可以推测是一个64位的指针和两个32位的$int$变量
+
+由于$x86$使用小端法，不难想到节点结构体应该是这样定义的
+
+```cpp
+struct node {
+	int val, key;
+    node * nxt;
+}nd[7];
+```
+
+链表的结构如下图
+
+![](https://img2024.cnblogs.com/blog/2454100/202511/2454100-20251122165437726-887554691.png)
+
+接下来我们按汇编代码手玩发现，首先通过$\%rcx$指向第$i$个数的地址($i$从0取到5)
+
+如果$b_i$的值为1(即$a_i=6$)，就直接将$0x6032d0$（链表的首地址）放入地址为$p-48+8*i$的内存中
+
+否则将$\%rdx$指向链表的首地址，并每次移动到$\%rbx+8$这个地址(链表下一个节点的地址)，即 $rbx = *rbx -> nxt$，直到当前指向的是链表中第$b_i$个节点，然后将当前的地址放入地址为$p-48+8*i$的内存中
+
+重复以上过程，直到6个节点地址都被保存下来
+
+我们设重排后的节点从地址$p-48$开始，分别保存的信息为三元组$(val_i,id_i,nxt_i)$
+
+```assembly
   4011ab:	48 8b 5c 24 20       	mov    0x20(%rsp),%rbx
   4011b0:	48 8d 44 24 28       	lea    0x28(%rsp),%rax
   4011b5:	48 8d 74 24 50       	lea    0x50(%rsp),%rsi
@@ -506,6 +556,11 @@ x=3 y=3 rax=0
   4011cd:	48 89 d1             	mov    %rdx,%rcx
   4011d0:	eb eb                	jmp    4011bd <phase_6+0xc9>
   4011d2:	48 c7 42 08 00 00 00 	movq   $0x0,0x8(%rdx)
+```
+
+接下来这段汇编代码从重排后的链表第一个节点开始，将$nxt_i$地址指针改为了重排后下一个节点的地址，最后一个节点的$nxt$地址指针被设置为了$0$($NULL$)
+
+```assembly
   4011d9:	00 
   4011da:	bd 05 00 00 00       	mov    $0x5,%ebp
   4011df:	48 8b 43 08          	mov    0x8(%rbx),%rax
@@ -525,69 +580,16 @@ x=3 y=3 rax=0
   401203:	c3                   	ret
 ```
 
+此后对于重排后的前5个节点，用$\%rbx$指向它，用$\%rax$指向它的下一个节点，将它们指向的值进行比较(注意比较时使用的是$\%eax$，即使用前32位的$val$值进行比较)，当前一个值小于下一个值的时候发生爆炸，否则整个函数安全退出
 
+所以我们的目标很明确了，只需要使得输入能将链表的$val$值从大到小排序就行了
 
-### secret_phase
+可以得到链表的顺序按照$id$排序应该为 `3 4 5 6 1 2`，这就是$b$数组
 
-```assembly
- 0000000000401204 <fun7>: 
-  401204:	48 83 ec 08          	sub    $0x8,%rsp
-  401208:	48 85 ff             	test   %rdi,%rdi
-  40120b:	74 2b                	je     401238 <fun7+0x34>
-  40120d:	8b 17                	mov    (%rdi),%edx
-  40120f:	39 f2                	cmp    %esi,%edx
-  401211:	7e 0d                	jle    401220 <fun7+0x1c>
-  401213:	48 8b 7f 08          	mov    0x8(%rdi),%rdi
-  401217:	e8 e8 ff ff ff       	call   401204 <fun7>
-  40121c:	01 c0                	add    %eax,%eax
-  40121e:	eb 1d                	jmp    40123d <fun7+0x39>
-  401220:	b8 00 00 00 00       	mov    $0x0,%eax
-  401225:	39 f2                	cmp    %esi,%edx
-  401227:	74 14                	je     40123d <fun7+0x39>
-  401229:	48 8b 7f 10          	mov    0x10(%rdi),%rdi
-  40122d:	e8 d2 ff ff ff       	call   401204 <fun7>
-  401232:	8d 44 00 01          	lea    0x1(%rax,%rax,1),%eax
-  401236:	eb 05                	jmp    40123d <fun7+0x39>
-  401238:	b8 ff ff ff ff       	mov    $0xffffffff,%eax
-  40123d:	48 83 c4 08          	add    $0x8,%rsp
-  401241:	c3                   	ret
-```
+注意输入的$b_i=7-a_i$，所以输入的$a$数组应该为 `4 3 2 1 6 5`
 
-```assembly
- 0000000000401242 <secret_phase>: 
-  401242:	53                   	push   %rbx
-  401243:	e8 56 02 00 00       	call   40149e <read_line>
-  401248:	ba 0a 00 00 00       	mov    $0xa,%edx
-  40124d:	be 00 00 00 00       	mov    $0x0,%esi
-  401252:	48 89 c7             	mov    %rax,%rdi
-  401255:	e8 76 f9 ff ff       	call   400bd0 <strtol@plt>
-  40125a:	48 89 c3             	mov    %rax,%rbx
-  40125d:	8d 40 ff             	lea    -0x1(%rax),%eax
-  401260:	3d e8 03 00 00       	cmp    $0x3e8,%eax
-  401265:	76 05                	jbe    40126c <secret_phase+0x2a>
-  401267:	e8 ce 01 00 00       	call   40143a <explode_bomb>
-  40126c:	89 de                	mov    %ebx,%esi
-  40126e:	bf f0 30 60 00       	mov    $0x6030f0,%edi
-  401273:	e8 8c ff ff ff       	call   401204 <fun7>
-  401278:	83 f8 02             	cmp    $0x2,%eax
-  40127b:	74 05                	je     401282 <secret_phase+0x40>
-  40127d:	e8 b8 01 00 00       	call   40143a <explode_bomb>
-  401282:	bf 38 24 40 00       	mov    $0x402438,%edi
-  401287:	e8 84 f8 ff ff       	call   400b10 <puts@plt>
-  40128c:	e8 33 03 00 00       	call   4015c4 <phase_defused>
-  401291:	5b                   	pop    %rbx
-  401292:	c3                   	ret
-  401293:	90                   	nop
-  401294:	90                   	nop
-  401295:	90                   	nop
-  401296:	90                   	nop
-  401297:	90                   	nop
-  401298:	90                   	nop
-  401299:	90                   	nop
-  40129a:	90                   	nop
-  40129b:	90                   	nop
-  40129c:	90                   	nop
-  40129d:	90                   	nop
-  40129e:	90                   	nop
-  40129f:	90                   	nop
-```
+### 结果
+
+![](https://img2024.cnblogs.com/blog/2454100/202511/2454100-20251122174755181-1809557604.png)
+
+完结撒花！
