@@ -6,3 +6,11 @@ updated on 2025.11.08
 updated on 2025.11.17
 ### [Bomblab](https://www.cnblogs.com/cqbzlzh/p/19249802 "Bomblab")
 updated on 2025.11.22
+## [处理器体系结构](https://www.cnblogs.com/cqbzlzh/p/19261938 "处理器体系结构") 
+流水线的HCL实现咕掉了（
+updated on 2025.11.30
+
+### [Archlab](https://www.cnblogs.com/cqbzlzh/p/19290675 "CSAPP Archlab")
+Part C 学完第五章程序的优化再来更
+
+updated on 2025.11.30
