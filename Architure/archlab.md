@@ -234,6 +234,16 @@ stack:
 
 按照SEQ的步骤，一步一步判断每个相关信号的值就行
 
+shell中使用以下指令进行测试
+
+```
+make  VERSION=full
+./ssim -t ../y86-code/asumi.yo
+cd ../y86-code; make testssim
+```
+
+
+
 ```
 #/* $begin seq-all-hcl */
 ####################################################################
@@ -462,6 +472,617 @@ word new_pc = [
 
 ```
 
-### Part C 咕咕咕
+### Part C Y86-64程序性能优化
 
-学完第五章程序的优化再来更
+#### 写在前面
+
+这个lab给定了你流水线化的控制代码以及一段代码的C和Y86-64实现，要求你优化流水线的控制代码和汇编代码，提高其运行效率
+
+```
+make  VERSION=full
+cd ../ptest; make SIM=../pipe/psim
+cd ../ptest; make SIM=../pipe/psim TFLAGS=-i
+```
+
+可以对修改后的处理器进行测试
+
+`../misc/yas ncopy.ys && ./check-len.pl < ncopy.yo` 检查汇编代码是否超过1000Byte的限制
+
+`./correctness.pl`检查汇编代码的正确性
+
+`make drivers && ./benchmark.pl`进行本地跑分，计算CPE
+
+得分细则如下
+
+
+
+<div align="center"><img src="https://picx.zhimg.com/v2-c0647d3e3d958bb5da9ff8c644d1a2d9_r.jpg" style="zoom:60%" alt=""/></div>
+
+C代码如下，函数的功能是将src开始的len个元素全部拷贝到dst对应地址中，并返回源数据中正数个数
+
+```c
+/* $begin ncopy */
+/*
+ * ncopy - copy src to dst, returning number of positive ints
+ * contained in src array.
+ */
+word_t ncopy(word_t *src, word_t *dst, word_t len)
+{
+    word_t count = 0;
+    word_t val;
+
+    while (len > 0) {
+	val = *src++;
+	*dst++ = val;
+	if (val > 0)
+	    count++;
+	len--;
+    }
+    return count;
+}
+/* $end ncopy */
+```
+
+Y86-64汇编原始代码
+
+```assembly
+# %rdi = src, %rsi = dst, %rdx = len
+# You can modify this portion
+	# Loop header
+	xorq %rax,%rax		# count = 0;
+	andq %rdx,%rdx		# len <= 0?
+	jle Done		# if so, goto Done:
+
+Loop:	
+    mrmovq (%rdi), %r10	# read val from src...
+	rmmovq %r10, (%rsi)	# ...and store it to dst
+	andq %r10, %r10		# val <= 0?
+	jle Npos		# if so, goto Npos:
+	irmovq $1, %r10
+	addq %r10, %rax		# count++
+Npos:	
+	irmovq $1, %r10
+	subq %r10, %rdx		# len--
+	irmovq $8, %r10
+	addq %r10, %rdi		# src++
+	addq %r10, %rsi		# dst++
+	andq %rdx,%rdx		# len > 0?
+	jg Loop			# if so, goto Loop:
+```
+
+跑分结果如下：
+
+`Average CPE     15.18
+Score   0.0/60.0`
+
+你都交原始代码了还想得分？(
+
+#### 使用iaddq指令
+
+我们用Part B中相同的步骤，修改 `pipe-full.hcl`引入`iaddq`指令，减少向寄存器反复写入常数的开销
+
+``` assembly
+# You can modify this portion
+	# Loop header
+	xorq %rax,%rax		# count = 0;
+	andq %rdx,%rdx		# len <= 0?
+	jle Done		# if so, goto Done:
+
+Loop:	
+    mrmovq (%rdi), %r10	# read val from src...
+	rmmovq %r10, (%rsi)	# ...and store it to dst
+	andq %r10, %r10		# val <= 0?
+	jle Npos		# if so, goto Npos:	
+    iaddq $1, %rax      # count++
+Npos:
+    iaddq $-1, %rdx     # len--
+	irmovq $8, %r10
+	iaddq $8, %rdi		# src++
+	iaddq $8, %rsi		# dst++
+	andq %rdx,%rdx		# len > 0?
+	jg Loop			# if so, goto Loop:
+```
+
+`Average CPE     13.70
+Score   0.0/60.0`
+
+优化后结果如下，性能略有提升，但仍然是0分
+
+#### 循环展开以及用条件传送替换条件跳转
+
+考虑对源代码进行 $8 \times 8$的循环展开，同时使用不同的寄存器存储拷贝的值，减少循环判断和数据相关性
+
+同时，对于统计正数这一部分，我们可以简单地使用条件传送而非条件跳转，避免分支预测错误带来的巨大性能损失
+
+```assembly
+	xorq %rax,%rax		# count = 0;
+	andq %rdx,%rdx		# len <= 0?
+	jle Done		# if so, goto Done:
+    irmovq $1, %r8  #store const 1 in %r8
+
+Judge:
+    iaddq $-8, %rdx
+    jl Endloop
+
+Loop:
+    mrmovq (%rdi), %rbx
+    mrmovq 8(%rdi), %rbp
+    mrmovq 16(%rdi), %r9
+    mrmovq 24(%rdi), %r10
+    mrmovq 32(%rdi), %r11
+    mrmovq 40(%rdi), %r12
+    mrmovq 48(%rdi), %r13
+    mrmovq 56(%rdi), %r14
+
+    irmovq $0, %rcx
+    andq %rbx, %rbx
+    cmovg %r8, %rcx
+    addq %rcx, %rax
+
+    irmovq $0, %rcx
+    andq %rbp, %rbp
+    cmovg %r8, %rcx
+    addq %rcx, %rax
+
+    irmovq $0, %rcx
+    andq %r9, %r9
+    cmovg %r8, %rcx
+    addq %rcx, %rax
+
+    irmovq $0, %rcx
+    andq %r10, %r10
+    cmovg %r8, %rcx
+    addq %rcx, %rax
+
+    irmovq $0, %rcx
+    andq %r11, %r11
+    cmovg %r8, %rcx
+    addq %rcx, %rax
+
+    irmovq $0, %rcx
+    andq %r12, %r12
+    cmovg %r8, %rcx
+    addq %rcx, %rax
+
+    irmovq $0, %rcx
+    andq %r13, %r13
+    cmovg %r8, %rcx
+    addq %rcx, %rax
+
+    irmovq $0, %rcx
+    andq %r14, %r14
+    cmovg %r8, %rcx
+    addq %rcx, %rax
+
+    rmmovq %rbx, (%rsi)
+    rmmovq %rbp, 8(%rsi)
+    rmmovq %r9, 16(%rsi)
+    rmmovq %r10, 24(%rsi)
+    rmmovq %r11, 32(%rsi)
+    rmmovq %r12, 40(%rsi)
+    rmmovq %r13, 48(%rsi)
+    rmmovq %r14, 56(%rsi)
+
+	iaddq $64, %rdi		# src+=8
+	iaddq $64, %rsi		# dst+=8
+	jmp Judge
+
+Endloop:
+    iaddq $8, %rdx
+
+Judge2:
+    andq %rdx, %rdx
+    jle Done
+Loop2:
+    mrmovq (%rdi), %rbx
+    irmovq $0, %rcx
+    andq %rbx, %rbx
+    cmovg %r8, %rcx
+    addq %rcx, %rax
+    rmmovq %rbx, (%rsi)
+    iaddq $8, %rdi
+    iaddq $8, %rsi
+    iaddq $-1, %rdx
+    jmp Judge2
+```
+
+CPE以及得分如下
+
+`Average CPE     9.98
+Score   10.5/60.0`
+
+我们发现，在拷贝的数量比较少的时候，CPE的值相当大，甚至比最原始的汇编代码性能还要差，同时，在注释掉对于剩下 $len \%8$个数的拷贝与统计的时候，CPE下降到了6.79，足以得到满分，说明该程序性能的瓶颈在于对余数的处理
+
+#### 对于余数的处理
+
+考虑对于最后8个数不采用循环，直接类似循环展开依次拷贝并统计
+
+```assembly
+Endloop:
+    iaddq $8, %rdx
+    jle Done
+
+    mrmovq (%rdi), %rbx
+    irmovq $0, %rcx
+    andq %rbx, %rbx
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %rbx, (%rsi)
+    jle Done
+
+    mrmovq 8(%rdi), %rbp
+    irmovq $0, %rcx
+    andq %rbp, %rbp
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %rbp, 8(%rsi)
+    jle Done
+
+    mrmovq 16(%rdi), %r9
+    irmovq $0, %rcx
+    andq %r9, %r9
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %r9, 16(%rsi)
+    jle Done
+
+    mrmovq 24(%rdi), %r10
+    irmovq $0, %rcx
+    andq %r10, %r10
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %r10, 24(%rsi)
+    jle Done
+
+    mrmovq 32(%rdi), %r11
+    irmovq $0, %rcx
+    andq %r11, %r11
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %r11, 32(%rsi)
+    jle Done
+
+    mrmovq 40(%rdi), %r12
+    irmovq $0, %rcx
+    andq %r12, %r12
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %r12, 40(%rsi)
+    jle Done
+
+    mrmovq 48(%rdi), %r13
+    irmovq $0, %rcx
+    andq %r13, %r13
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %r13, 48(%rsi)
+    jle Done
+
+    mrmovq 56(%rdi), %r14
+    irmovq $0, %rcx
+    andq %r14, %r14
+    cmovg %r8, %rcx
+    addq %rcx, %rax
+    iaddq $-1, %rdx
+    rmmovq %r14, 56(%rsi)
+```
+`Average CPE     9.04
+Score   29.3/60.0`
+
+性能略有提升
+
+再考虑到该处理器对于分支的预测是预测进入，而对于后八个数进入 `Done`的可能性更小，可能会导致分支预测出错导致性能下降，所以我们将跳转改为更可能的进入下一个数的处理
+
+```assembly
+Endloop:
+    iaddq $8, %rdx
+    jle Done
+
+    mrmovq (%rdi), %rbx
+    irmovq $0, %rcx
+    andq %rbx, %rbx
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %rbx, (%rsi)
+    jg calc2
+    jmp Done
+
+calc2:
+    mrmovq 8(%rdi), %rbp
+    irmovq $0, %rcx
+    andq %rbp, %rbp
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %rbp, 8(%rsi)
+    jg calc3
+    jmp Done
+
+calc3:
+    mrmovq 16(%rdi), %r9
+    irmovq $0, %rcx
+    andq %r9, %r9
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %r9, 16(%rsi)
+    jg calc4
+    jmp Done
+
+calc4:
+    mrmovq 24(%rdi), %r10
+    irmovq $0, %rcx
+    andq %r10, %r10
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %r10, 24(%rsi)
+    jg calc5
+    jmp Done
+
+calc5:
+    mrmovq 32(%rdi), %r11
+    irmovq $0, %rcx
+    andq %r11, %r11
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %r11, 32(%rsi)
+    jg calc6
+    jmp Done
+
+calc6:
+    mrmovq 40(%rdi), %r12
+    irmovq $0, %rcx
+    andq %r12, %r12
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %r12, 40(%rsi)
+    jg calc7
+    jmp Done
+
+calc7:
+    mrmovq 48(%rdi), %r13
+    irmovq $0, %rcx
+    andq %r13, %r13
+    cmovg %r8, %rcx
+    addq %rcx, %rax    
+    iaddq $-1, %rdx
+    rmmovq %r13, 48(%rsi)
+    jg calc8
+    jmp Done
+
+calc8:
+    mrmovq 56(%rdi), %r14
+    irmovq $0, %rcx
+    andq %r14, %r14
+    cmovg %r8, %rcx
+    addq %rcx, %rax
+    iaddq $-1, %rdx
+    rmmovq %r14, 56(%rsi)
+```
+
+`Average CPE     8.92
+Score   31.5/60.0`
+
+性能也有所提升
+
+#### 一些奇怪的优化
+
+发现从条件传送改回条件跳转效率反而增加了。。。可能是条件传送要求对 `%rcx`反复进行清零，传送，加法，相关性过高，操作数量也变多了，反而不如条件跳转（
+
+```assembly
+    andq %rbx, %rbx
+    jle Test2
+    iaddq $1, %rax
+
+Test2:
+    andq %rbp, %rbp
+    jle Test3
+    iaddq $1, %rax
+```
+
+类似这样修改就行
+
+`Average CPE     8.50
+Score   40.0/60.0`
+
+效率又提升了
+
+然后发现 `%rax`的值初始就为0，且数据中不存在长度为非负数的情况，因此循环之前的部分可以全部去掉（神金，害得我笑了一下
+
+`Average CPE     8.13
+Score   47.4/60.0`
+
+到了这里已经燃尽了，尝试过将余数按照$2 \times 2$循环展开效率反而下降了，想着提前将余数从内存放进寄存器来减少数据相关，但是会超过编码长度限制，后面的优化就以后再来探索吧（（（
+
+```assembly
+#/* $begin ncopy-ys */
+##################################################################
+# ncopy.ys - Copy a src block of len words to dst.
+# Return the number of positive words (>0) contained in src.
+#
+# Include your name and ID here.
+#
+# Describe how and why you modified the baseline code.
+#
+##################################################################
+# Do not modify this portion
+# Function prologue.
+# %rdi = src, %rsi = dst, %rdx = len
+ncopy:
+
+##################################################################
+# You can modify this portion
+	# Loop header
+	# count = 0;
+	# len <= 0?
+	# if so, goto Done:
+
+Judge:
+    iaddq $-8, %rdx
+    jl Endloop
+
+Loop:
+    mrmovq (%rdi), %rbx
+    mrmovq 8(%rdi), %rbp
+    mrmovq 16(%rdi), %r9
+    mrmovq 24(%rdi), %r10
+    mrmovq 32(%rdi), %r11
+    mrmovq 40(%rdi), %r12
+    mrmovq 48(%rdi), %r13
+    mrmovq 56(%rdi), %r14
+
+    rmmovq %rbx, (%rsi)
+    rmmovq %rbp, 8(%rsi)
+    rmmovq %r9, 16(%rsi)
+    rmmovq %r10, 24(%rsi)
+    rmmovq %r11, 32(%rsi)
+    rmmovq %r12, 40(%rsi)
+    rmmovq %r13, 48(%rsi)
+    rmmovq %r14, 56(%rsi)
+
+    andq %rbx, %rbx
+    jle Test2
+    iaddq $1, %rax
+
+Test2:
+    andq %rbp, %rbp
+    jle Test3
+    iaddq $1, %rax
+
+Test3:
+    andq %r9, %r9
+    jle Test4
+    iaddq $1, %rax
+
+Test4:
+    andq %r10, %r10
+    jle Test5
+    iaddq $1, %rax
+
+Test5:
+    andq %r11, %r11
+    jle Test6
+    iaddq $1, %rax
+
+Test6:
+    andq %r12, %r12
+    jle Test7
+    iaddq $1, %rax
+
+Test7:
+    andq %r13, %r13
+    jle Test8
+    iaddq $1, %rax
+
+Test8:
+    andq %r14, %r14
+    jle Test9
+    iaddq $1, %rax
+
+Test9:
+
+	iaddq $64, %rdi		# src+=8
+	iaddq $64, %rsi		# dst+=8
+	jmp Judge
+
+Endloop:
+    iaddq $8, %rdx
+    jle Done
+
+    mrmovq (%rdi), %rbx
+    andq %rbx, %rbx
+    jle Notadd1
+    iaddq $1, %rax
+Notadd1:
+    iaddq $-1, %rdx
+    rmmovq %rbx, (%rsi)
+    jg calc2
+    jmp Done
+
+calc2:
+    mrmovq 8(%rdi), %rbp
+    andq %rbp, %rbp
+    jle Notadd2
+    iaddq $1, %rax
+Notadd2:   
+    iaddq $-1, %rdx
+    rmmovq %rbp, 8(%rsi)
+    jg calc3
+    jmp Done
+
+calc3:
+    mrmovq 16(%rdi), %r9
+    andq %r9, %r9
+    jle Notadd3
+    iaddq $1, %rax
+Notadd3:  
+    iaddq $-1, %rdx
+    rmmovq %r9, 16(%rsi)
+    jg calc4
+    jmp Done
+
+calc4:
+    mrmovq 24(%rdi), %r10
+    andq %r10, %r10
+    jle Notadd4
+    iaddq $1, %rax
+Notadd4:   
+    iaddq $-1, %rdx
+    rmmovq %r10, 24(%rsi)
+    jg calc5
+    jmp Done
+
+calc5:
+    mrmovq 32(%rdi), %r11
+    andq %r11, %r11
+    jle Notadd5
+    iaddq $1, %rax
+Notadd5:
+    iaddq $-1, %rdx
+    rmmovq %r11, 32(%rsi)
+    jg calc6
+    jmp Done
+
+calc6:
+    mrmovq 40(%rdi), %r12
+    andq %r12, %r12
+    jle Notadd6
+    iaddq $1, %rax
+Notadd6:
+    iaddq $-1, %rdx
+    rmmovq %r12, 40(%rsi)
+    jg calc7
+    jmp Done
+
+calc7:
+    mrmovq 48(%rdi), %r13
+    andq %r13, %r13
+    jle Notadd7
+    iaddq $1, %rax
+Notadd7:  
+    iaddq $-1, %rdx
+    rmmovq %r13, 48(%rsi)
+
+##################################################################
+# Do not modify the following section of code
+# Function epilogue.
+Done:
+	ret
+##################################################################
+# Keep the following label at the end of your function
+End:
+#/* $end ncopy-ys */
+
+```
+
