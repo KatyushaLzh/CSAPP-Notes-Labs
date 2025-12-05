@@ -49,6 +49,7 @@ long rsum_list(list_ptr ls)
 比较简单，直接实现即可
 
 ```assembly
+##################################################################
 #initialization
 
 .pos 0
@@ -103,6 +104,7 @@ stack:
 最后需要多打一个换行才能过编译，我也不知道为什么（
 
 ```assembly
+##################################################################
 #initialization
 
 .pos 0
@@ -171,6 +173,7 @@ long copy_block(long *src, long *dest, long len)
 ```
 
 ```assembly
+##################################################################
 #initialization
 
 .pos 0
@@ -526,6 +529,7 @@ word_t ncopy(word_t *src, word_t *dst, word_t len)
 Y86-64汇编原始代码
 
 ```assembly
+##################################################################
 # %rdi = src, %rsi = dst, %rdx = len
 # You can modify this portion
 	# Loop header
@@ -562,6 +566,7 @@ Score   0.0/60.0`
 我们用Part B中相同的步骤，修改 `pipe-full.hcl`引入`iaddq`指令，减少向寄存器反复写入常数的开销
 
 ``` assembly
+##################################################################
 # You can modify this portion
 	# Loop header
 	xorq %rax,%rax		# count = 0;
@@ -595,6 +600,7 @@ Score   0.0/60.0`
 同时，对于统计正数这一部分，我们可以简单地使用条件传送而非条件跳转，避免分支预测错误带来的巨大性能损失
 
 ```assembly
+##################################################################
 	xorq %rax,%rax		# count = 0;
 	andq %rdx,%rdx		# len <= 0?
 	jle Done		# if so, goto Done:
@@ -698,6 +704,7 @@ Score   10.5/60.0`
 考虑对于最后8个数不采用循环，直接类似循环展开依次拷贝并统计
 
 ```assembly
+##################################################################
 Endloop:
     iaddq $8, %rdx
     jle Done
@@ -773,6 +780,7 @@ Endloop:
     iaddq $-1, %rdx
     rmmovq %r14, 56(%rsi)
 ```
+
 `Average CPE     9.04
 Score   29.3/60.0`
 
@@ -781,6 +789,7 @@ Score   29.3/60.0`
 再考虑到该处理器对于分支的预测是预测进入，而对于后八个数进入 `Done`的可能性更小，可能会导致分支预测出错导致性能下降，所以我们将跳转改为更可能的进入下一个数的处理
 
 ```assembly
+##################################################################
 Endloop:
     iaddq $8, %rdx
     jle Done
@@ -881,6 +890,7 @@ Score   31.5/60.0`
 发现从条件传送改回条件跳转效率反而增加了。。。可能是条件传送要求对 `%rcx`反复进行清零，传送，加法，相关性过高，操作数量也变多了，反而不如条件跳转（
 
 ```assembly
+##################################################################
     andq %rbx, %rbx
     jle Test2
     iaddq $1, %rax
@@ -903,9 +913,229 @@ Score   40.0/60.0`
 `Average CPE     8.13
 Score   47.4/60.0`
 
-到了这里已经燃尽了，尝试过将余数按照$2 \times 2$循环展开效率反而下降了，想着提前将余数从内存放进寄存器来减少数据相关，但是会超过编码长度限制，后面的优化就以后再来探索吧（（（
+#### 我很难受，叫基米来
+
+现在代码的限制瓶颈是处理余数时由于不知道需要处理的个数，我们只能将数据从内存中加载到寄存器后就立即使用检查其是否大于0，这产生了数据依赖
+
+到了这里已经燃尽了，尝试过将余数按照$2 \times 2$循环展开效率反而下降了，想着提前将余数从内存放进寄存器来减少数据相关，但是会超过编码长度限制，是时候询问伟大的哈基米3.0pro了（
+
+Gemini3.0pro告诉我，可以用类似二叉树的结构高效地处理余数，具体来说，可以先将余数按照0-3和4-7分为左右儿子，对于右儿子，可以直接加载0-3的数进入寄存器中，进而减小了数据依赖，每个节点继续向下分，对于大小为2的右儿子也可以直接加载左儿子寄存器
+
+同时发现循环展开中专门为循环判断设计函数进行跳转是不必要的，可以直接将判断写在循环的末尾
+
+循环结尾改为
+
+``` assembly
+##################################################################
+Test9:
+	iaddq $64, %rdi		# src+=8
+	iaddq $64, %rsi		# dst+=8
+    iaddq $-8, %rdx
+	jge Loop
+```
+
+使用二叉树结构处理余数部分汇编代码如下
 
 ```assembly
+##################################################################
+Endloop:
+    # -8 <= %rdx <= -1
+    iaddq $4, %rdx
+    jge Four_to_Seven
+    iaddq $4, %rdx
+    jmp Zero_to_Three
+Four_to_Seven:
+    mrmovq (%rdi), %rbx
+    mrmovq 8(%rdi), %rbp
+    mrmovq 16(%rdi), %r9
+    mrmovq 24(%rdi), %r10
+
+    rmmovq %rbx, (%rsi)
+    rmmovq %rbp, 8(%rsi)
+    rmmovq %r9, 16(%rsi)
+    rmmovq %r10, 24(%rsi)
+
+    andq %rbx, %rbx
+    jle Notadd1
+    iaddq $1, %rax
+Notadd1:
+    andq %rbp, %rbp
+    jle Notadd2
+    iaddq $1, %rax
+Notadd2:
+    andq %r9, %r9
+    jle Notadd3
+    iaddq $1, %rax
+Notadd3:
+    andq %r10, %r10
+    jle Notadd4
+    iaddq $1, %rax
+Notadd4:
+    iaddq $32, %rdi
+    iaddq $32, %rsi
+
+Zero_to_Three:
+    # 0 <= %rdx <= 3
+    iaddq $-2, %rdx
+    jge Two_to_Three
+    iaddq $2, %rdx
+    jmp Zero_to_One
+
+Two_to_Three:
+    mrmovq (%rdi), %rbx
+    mrmovq 8(%rdi), %rbp
+    andq %rbx, %rbx
+    jle Notadd1_2
+    iaddq $1, %rax
+Notadd1_2:
+    andq %rbp, %rbp
+    jle Notadd2_2
+    iaddq $1, %rax
+Notadd2_2:
+    rmmovq %rbx, (%rsi)
+    rmmovq %rbp, 8(%rsi)
+    iaddq $16, %rdi
+    iaddq $16, %rsi
+
+Zero_to_One:
+    andq %rdx, %rdx
+    je Done
+    mrmovq (%rdi), %rbx
+    rmmovq %rbx, (%rsi)
+    andq %rbx, %rbx
+    jle Done
+    iaddq $1, %rax
+```
+
+`Average CPE     7.90
+Score   52.1/60.0`
+
+尝试在余数为2和3的时候进行特判，避免进入左子树
+
+``` assembly
+##################################################################
+Two_to_Three:
+    mrmovq (%rdi), %rbx
+    mrmovq 8(%rdi), %rbp
+    je Handle_2
+    mrmovq 16(%rdi), %r9
+    rmmovq %r9, 16(%rsi)
+    andq %r9, %r9
+    jle Handle_2
+    iaddq $1, %rax
+Handle_2:
+    rmmovq %rbx, (%rsi)
+    andq %rbx, %rbx
+    jle Notadd1_2
+    iaddq $1, %rax
+Notadd1_2:
+    rmmovq %rbp, 8(%rsi)
+    andq %rbp, %rbp
+    jle Done
+    iaddq $1, %rax
+    jmp Done
+```
+
+`Average CPE     7.80
+Score   54.0/60.0`
+
+同时我们发现在处理的长度特别小的时候，CPE相当大
+
+` ncopy
+0       26
+1       33      33.00
+2       33      16.50
+3       39      13.00
+4       46      11.50
+5       53      10.60`
+
+由于处理器的分支预测逻辑是预测进入，所以我们尝试修改为预测进入左子树
+
+``` assembly
+##################################################################
+Endloop:
+    # -8 <= %rdx <= -1
+    iaddq $4, %rdx
+    jl Pre_Zero_to_Three
+
+Four_to_Seven:
+    mrmovq (%rdi), %rbx
+    mrmovq 8(%rdi), %rbp
+    mrmovq 16(%rdi), %r9
+    mrmovq 24(%rdi), %r10
+
+    rmmovq %rbx, (%rsi)
+    rmmovq %rbp, 8(%rsi)
+    rmmovq %r9, 16(%rsi)
+    rmmovq %r10, 24(%rsi)
+    
+    andq %rbx, %rbx
+    jle Notadd1
+    iaddq $1, %rax
+Notadd1:
+    andq %rbp, %rbp
+    jle Notadd2
+    iaddq $1, %rax
+Notadd2:
+    andq %r9, %r9
+    jle Notadd3
+    iaddq $1, %rax
+Notadd3:
+    andq %r10, %r10
+    jle Notadd4
+    iaddq $1, %rax
+Notadd4:
+    iaddq $32, %rdi
+    iaddq $32, %rsi
+    jmp Zero_to_Three
+
+Pre_Zero_to_Three:
+    iaddq $4, %rdx
+
+Zero_to_Three:
+    # 0 <= %rdx <= 3
+    iaddq $-2, %rdx
+    jl Zero_to_One
+
+Two_to_Three:
+    mrmovq (%rdi), %rbx
+    mrmovq 8(%rdi), %rbp
+    je Handle_2
+    mrmovq 16(%rdi), %r9
+    rmmovq %r9, 16(%rsi)
+    andq %r9, %r9
+    jle Handle_2
+    iaddq $1, %rax
+Handle_2:
+    rmmovq %rbx, (%rsi)
+    andq %rbx, %rbx
+    jle Notadd1_2
+    iaddq $1, %rax
+Notadd1_2:
+    rmmovq %rbp, 8(%rsi)
+    andq %rbp, %rbp
+    jle Done
+    iaddq $1, %rax
+    jmp Done
+
+Zero_to_One:
+    iaddq $2, %rdx
+    je Done
+    mrmovq (%rdi), %rbx
+    rmmovq %rbx, (%rsi)
+    andq %rbx, %rbx
+    jle Done
+    iaddq $1, %rax
+```
+
+`Average CPE     7.65
+Score   57.1/60.0`
+
+调到这里已经产生生理性不适了，再写下去就要堆成屎山了，后面的区域以后再来探索吧（（（
+
+遗憾离场
+
+``` assembly
 #/* $begin ncopy-ys */
 ##################################################################
 # ncopy.ys - Copy a src block of len words to dst.
@@ -928,7 +1158,6 @@ ncopy:
 	# len <= 0?
 	# if so, goto Done:
 
-Judge:
     iaddq $-8, %rdx
     jl Endloop
 
@@ -991,88 +1220,85 @@ Test8:
     iaddq $1, %rax
 
 Test9:
-
 	iaddq $64, %rdi		# src+=8
 	iaddq $64, %rsi		# dst+=8
-	jmp Judge
+    iaddq $-8, %rdx
+	jge Loop
 
+# handle remainder
 Endloop:
-    iaddq $8, %rdx
-    jle Done
+    # -8 <= %rdx <= -1
+    iaddq $4, %rdx
+    jl Pre_Zero_to_Three
 
+Four_to_Seven:
     mrmovq (%rdi), %rbx
+    mrmovq 8(%rdi), %rbp
+    mrmovq 16(%rdi), %r9
+    mrmovq 24(%rdi), %r10
+
+    rmmovq %rbx, (%rsi)
+    rmmovq %rbp, 8(%rsi)
+    rmmovq %r9, 16(%rsi)
+    rmmovq %r10, 24(%rsi)
+    
     andq %rbx, %rbx
     jle Notadd1
     iaddq $1, %rax
 Notadd1:
-    iaddq $-1, %rdx
-    rmmovq %rbx, (%rsi)
-    jg calc2
-    jmp Done
-
-calc2:
-    mrmovq 8(%rdi), %rbp
     andq %rbp, %rbp
     jle Notadd2
     iaddq $1, %rax
-Notadd2:   
-    iaddq $-1, %rdx
-    rmmovq %rbp, 8(%rsi)
-    jg calc3
-    jmp Done
-
-calc3:
-    mrmovq 16(%rdi), %r9
+Notadd2:
     andq %r9, %r9
     jle Notadd3
     iaddq $1, %rax
-Notadd3:  
-    iaddq $-1, %rdx
-    rmmovq %r9, 16(%rsi)
-    jg calc4
-    jmp Done
-
-calc4:
-    mrmovq 24(%rdi), %r10
+Notadd3:
     andq %r10, %r10
     jle Notadd4
     iaddq $1, %rax
-Notadd4:   
-    iaddq $-1, %rdx
-    rmmovq %r10, 24(%rsi)
-    jg calc5
+Notadd4:
+    iaddq $32, %rdi
+    iaddq $32, %rsi
+    jmp Zero_to_Three
+
+Pre_Zero_to_Three:
+    iaddq $4, %rdx
+
+Zero_to_Three:
+    # 0 <= %rdx <= 3
+    iaddq $-2, %rdx
+    jl Zero_to_One
+
+Two_to_Three:
+    mrmovq (%rdi), %rbx
+    mrmovq 8(%rdi), %rbp
+    je Handle_2
+    mrmovq 16(%rdi), %r9
+    rmmovq %r9, 16(%rsi)
+    andq %r9, %r9
+    jle Handle_2
+    iaddq $1, %rax
+Handle_2:
+    rmmovq %rbx, (%rsi)
+    andq %rbx, %rbx
+    jle Notadd1_2
+    iaddq $1, %rax
+Notadd1_2:
+    rmmovq %rbp, 8(%rsi)
+    andq %rbp, %rbp
+    jle Done
+    iaddq $1, %rax
     jmp Done
 
-calc5:
-    mrmovq 32(%rdi), %r11
-    andq %r11, %r11
-    jle Notadd5
+Zero_to_One:
+    iaddq $2, %rdx
+    je Done
+    mrmovq (%rdi), %rbx
+    rmmovq %rbx, (%rsi)
+    andq %rbx, %rbx
+    jle Done
     iaddq $1, %rax
-Notadd5:
-    iaddq $-1, %rdx
-    rmmovq %r11, 32(%rsi)
-    jg calc6
-    jmp Done
-
-calc6:
-    mrmovq 40(%rdi), %r12
-    andq %r12, %r12
-    jle Notadd6
-    iaddq $1, %rax
-Notadd6:
-    iaddq $-1, %rdx
-    rmmovq %r12, 40(%rsi)
-    jg calc7
-    jmp Done
-
-calc7:
-    mrmovq 48(%rdi), %r13
-    andq %r13, %r13
-    jle Notadd7
-    iaddq $1, %rax
-Notadd7:  
-    iaddq $-1, %rdx
-    rmmovq %r13, 48(%rsi)
 
 ##################################################################
 # Do not modify the following section of code
@@ -1083,6 +1309,5 @@ Done:
 # Keep the following label at the end of your function
 End:
 #/* $end ncopy-ys */
-
+    
 ```
-

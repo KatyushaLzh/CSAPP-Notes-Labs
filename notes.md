@@ -21,8 +21,9 @@ updated on 2025.11.30
 
 ### [Archlab](https://www.cnblogs.com/cqbzlzh/p/19290675 "CSAPP Archlab")
 
-Part C 目前还没能做到满分
-updated on 2025.12.4
+Part C 57.1/60.0 燃尽了（
+updated on 2025.12.5
 
 ## [程序性能优化](https://www.cnblogs.com/cqbzlzh/p/19304116 "程序性能优化")
 updated on 2025.12.3
+
