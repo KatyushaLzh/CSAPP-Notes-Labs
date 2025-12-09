@@ -27,3 +27,5 @@ updated on 2025.12.5
 ## [程序性能优化](https://www.cnblogs.com/cqbzlzh/p/19304116 "程序性能优化")
 updated on 2025.12.3
 
+## [存储器层次结构](https://www.cnblogs.com/cqbzlzh/p/19324066 "存储器层次结构")
+正在施工中

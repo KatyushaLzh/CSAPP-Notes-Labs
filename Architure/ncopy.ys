@@ -19,7 +19,6 @@ ncopy:
 	# count = 0;
 	# len <= 0?
 	# if so, goto Done:
- 
     iaddq $-8, %rdx
     jl Endloop
 
