@@ -92,7 +92,6 @@ $frac = \sum\limits_{i=0}^{n-1}f_i\times2^{i-n}$(分数)
 *1.规格化的情况($1 \leq exp \leq 2^k-2$)*
 $E=exp-bias$，$M=1.0 + frac$，那么有$-2^{k-1} + 2 \leq E \leq 2^{k-1} -1$
 
-
 *2.非规格化的情况($exp = 0$)*
 $E=1-bias$，$M=frac$
 用来表示$0$和极其接近$0$的值
@@ -145,8 +144,3 @@ NaN的传播特性：任何包含NaN的运算结果都是NaN
 $int$转$float$可能被舍入
 $double$转$int,float$可能会溢出或者被舍入
 $float,double$转$int$值会向零舍入，若溢出则产生整数不确定值$(100..00)_2$ 即$-2^{w-1}$
-
-### [Datalab](https://github.com/KatyushaLzh/CSAPP-Notes-Labs/tree/master/Data "Datalab")
-
-上古版本的c语法标准，需要变量声明在函数代码的顶部（
-以及不能使用实现过的函数，导致每次用的时候需要手动展开（（
