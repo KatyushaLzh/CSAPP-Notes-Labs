@@ -1,3 +1,7 @@
+**[Github](https://github.com/KatyushaLzh/CSAPP-Notes-Labs "Github")**
+
+[TOC]
+
 ## [信息的处理和表示](https://www.cnblogs.com/cqbzlzh/p/19197956 "信息的处理和表示") 
 
 updated on 2025.11.06
@@ -28,4 +32,10 @@ updated on 2025.12.5
 updated on 2025.12.3
 
 ## [存储器层次结构](https://www.cnblogs.com/cqbzlzh/p/19324066 "存储器层次结构")
-正在施工中
+updated on 2025.12.12
+
+### [Cachelab](https://www.cnblogs.com/cqbzlzh/p/19346826 "Cachelab")
+updated on 2025.12.15
+
+## [程序的链接](https://www.cnblogs.com/cqbzlzh/p/19374050 "程序的链接")
+updated on 2025.12.20
