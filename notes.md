@@ -1,3 +1,5 @@
+------------
+
 **[Github](https://github.com/KatyushaLzh/CSAPP-Notes-Labs "Github")**
 
 [TOC]
@@ -39,3 +41,6 @@ updated on 2025.12.15
 
 ## [程序的链接](https://www.cnblogs.com/cqbzlzh/p/19374050 "程序的链接")
 updated on 2025.12.20
+
+## [异常控制流](https://www.cnblogs.com/cqbzlzh/p/19380313 "异常控制流")
+正在施工中
