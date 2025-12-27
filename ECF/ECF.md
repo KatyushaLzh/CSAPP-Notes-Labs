@@ -105,9 +105,244 @@ hello world 汇编实现
 #### 上下文切换
 内核为每个进程都维护了一个上下文，当需要切换该进程执行时，恢复上下文并控制传递给这个进程即可
 在进程执行时，内核中的一段称为调度器的代码进行调度的决策，即决定是否对某个正在执行的进程进行抢占，转而执行其他被挂起的进程
-例如，当一个进程需要进行磁盘写的时候，调度器可以先将此进程挂起，上下文切换执行其他进程，当直接内存访问完成后再转而执行该进程
+例如，当一个进程需要进行磁盘写的时候，调度器可以先上下文切换执行其他进程，当直接内存访问完成后再转而执行该进程
 中断也可能引起上下文切换，如系统都能周期性地发出中断信号，让内核判定当前进程已经进行了较长时间，应该进行上下文切换
 
 <div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251222005433619-493679084.jpg" style="zoom:30%" alt=""/></div>
 
-------------
+### 进程控制
+
+下文介绍Linux下C程序中的进程控制方法
+
+#### 获取进程id
+
+```c
+pid_t getpid();
+pid_t getppid();
+```
+在Linux中，`pid_t` 被实现为 `int`。`getpid`返回当前进程的pid，`getppid`返回父进程的pid
+
+#### 创建和终止进程
+
+```c
+void exit(int status);
+```
+`exit`函数直接终止当前进程，并将退出状态设置为`status`
+
+```c
+pid_t fork();
+```
+`fork`创建一个子进程，该子进程被创建时几乎是父进程的一份拷贝，享有私有地址空间，与父进程并发地运行。当前进程为父进程的时候，返回值为创建的子进程的pid；当前进程为新的子进程的时候，返回值为0；由此可以判断当前执行的是子进程还是父进程。子进程与父进程交替执行的顺序未知，由调度器决定
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251226215446074-1331684320.jpg" style="zoom:30%" alt=""/></div>
+
+同时在shell中，也可以为了对一行命令行求值创建进程，该进程被称为**任务**，shell为每个任务创建一个新的进程组
+通过`|` (pipe) 将多个进程连接起来，如`linux> ls | sort`
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227134155929-598322018.jpg" style="zoom:30%" alt=""/></div>
+
+#### 子进程的回收
+当一个进程终止时，其相关的部分状态会仍然保持在内核中，直到被回收。一个终止但未被回收的进程称为**僵尸进程**(zombie)
+父进程可以对终止的子进程进行回收。当一个父进程终止，但是其子进程还没有被回收时，系统会安排pid为1的所有进程的祖先 `init`进程去回收它们，避免了对于系统资源的占用
+
+```c
+pid_t waitpid(pid_t pid, int *statusp, int options);
+```
+该函数默认行为是将当前进程挂起，直到指定的子进程终止，然后将子进程回收，最后返回被回收的子进程的pid
+若发生错误，则返回-1。错误原因为没有该子进程时，errno被设置为`ECHILD`；原因为该函数被信号中断时，设置为`EINTR`
+
+其中，pid表明了需要等待回收的子进程id，若id=-1则为当前进程的全部子进程，否则为pid为该参数的子进程
+
+options能指定该函数的行为，0为默认行为，可以通过以下定义的常量设置其行为
+1. `WNOHANG`：当前进程不会被挂起，即只会检查pid是否终止，终止则返回pid，否则返回0
+2. `WUNTRACE`：挂起当前进程，采取上文提到的默认行为，同时检查pid是否终止或挂起
+3. `WCONTINUED`：挂起当前进程，采取上文提到的默认行为，同时检查pid是否终止或从挂起变为执行
+以上的选项可以进行或运算(如`(WNOHANG | WUNTRACE)`)，函数行为是两种行为逻辑上的或
+
+在该函数调用完毕后，statusp指向的值会被改为导致子进程返回的信息，可以通过以下几个宏进行查看
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251226231327524-811478808.jpg" style="zoom:30%" alt=""/></div>
+
+也可以使用`wait(int *statusp)`函数，该函数等价于`waitpid(-1, int *statusp, 0)`
+
+以下是`waitpid`的一个例子
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251226231636090-126871764.jpg" style="zoom:30%" alt=""/></div>
+
+父进程和子进程执行顺序未知，子进程可能尚未执行完exit函数，需要重复将父进程挂起等待然后回收终止的子进程
+
+#### 进程的休眠
+
+```c
+unsigned int sleep(unsigned int secs);
+int pause();
+```
+`sleep`将当前进程挂起secs，可能被信号中断，返回值为实际挂起时间与secs的差
+`pause`会将当前进程一直挂起，直到收到一个信号
+
+#### 加载并运行程序
+
+```c
+int execve(const char *filename, const char *argv[], const char *envp[])
+```
+该函数直接在当前进程中执行可执行文件`filename`，参数为`argv`，环境变量为`envp`，此后除非找不到`filename`才返回-1，否则不会返回
+`execve`调用启动代码，将控制和相关参数传递给`filename`的`main`函数
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251226235110237-496077924.jpg" style="zoom:40%" alt=""/></div>
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251226235613389-111248240.jpg" style="zoom:30%" alt=""/></div>
+
+linux下，C提供了`getenv`，`setenv`，`unsetenv`等函数对当前进程的环境变量进行修改
+
+通过`fork+execve`，我们得以在创建的子进程中运行一个程序
+
+### 信号
+异常是处理器层面的，而信号可以理解为程序层面的异常。信号提供了一种机制，内核通知用户进程发生了异常，进程做出相应的反应
+例如：shell 中 `Ctrl+C`使内核发送`SIGKILL`信号将进程终止；`Ctrl+Z`使内核发送`SIGKILL`信号将进程挂起
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227001423636-906509284.jpg" style="zoom:30%" alt=""/></div>
+
+#### 信号处理的流程
+当一个系统事件发生时，内核会将对应的信号发送给相应的进程，该进程以某种方式对信号做出回应，称为接收了该信号
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227002735988-1705414123.jpg" style="zoom:30%" alt=""/></div>
+
+每个进程都有两个内核维护的信号集：`pending`未决信号集 和 `blocked` 阻塞信号集
+
+当一个信号产生时：
+1. 首先检查该信号在blocked集中的对应位：
+   - 如果为1（被阻塞）：将pending集中对应位设为1，信号暂时不会被递送
+   - 如果为0（未被阻塞）：立即尝试递送信号
+
+2. 接收信号时：
+   - 如果进程正在执行相同信号的处理程序，则将pending位设为1，等待当前处理完成
+   - 否则，调用信号处理程序
+
+3. 信号处理完成后：
+   - 内核检查pending集，如果有被阻塞的信号变为未阻塞，则接收它们
+   - 接收完成后，清除相应的pending位（设为0）
+
+由于pending集采用位图实现，短时间内多次产生的相同信号：
+- 在pending集中只会记录一次（位图只能为0或1）
+- 即使产生了多次，也只会被接收一次
+这就是"标准信号不排队"的现象（注意：实时信号是排队的）
+
+#### 发送信号
+
+##### 进程组
+通过将每个进程都分配到某个进程组，得以实现对大量进程发送同一信号
+```c
+pid_t getpgrp();
+int setpgid(pid_t pid, pid_t pgid);
+```
+
+`getpgrp` 返回当前进程所在进程组编号；`setgpid`将pid进程所属的组设置为`pgid`，成功返回0，错误返回-1，pid为0时是当前进程，pgid为0时表示分配到以当前进程pid为组pgid的进程组
+
+##### 信号的发送
+在shell中，可以使用`linux>/bin/kill -SIG PID` 向PID发送SIG对应的信号，其中若PID为负数，则对应的进程为PID绝对值对应的进程组号
+在C中，也可以使用`kill`函数
+```c
+int kill(pid_t pid, int sig);
+```
+用法与`/bin/kill`类似，只是两个参数位置相反，并且pid=0是是向当前进程所在组的所有进程发送该信号
+
+```c
+unsigned int alarm(unsigned int secs);
+```
+在secs秒后，内核向当前进程发送一个`SIGALRM`信号，新的闹钟会取代旧的闹钟，并返回旧闹钟剩余时间
+
+##### 接收信号
+C中可以通过`signal`函数改变除`SIGSTOP`，`SIGKILL`以外的信号对应的信号处理程序的行为，原型如下
+```c
+typedef void (*sighandler_t)(int)
+sighandler_t signal(int signum, sighandler_t handler);
+```
+该函数将`signum`对应的信号处理程序行为改为`handler`函数，若成功则返回之前的行为对应的函数，否则返回`SIG_ERR`
+
+`handler`可以取以下参数：
+1. `SIG_IGN` 将行为设置为忽略该信号
+2. `SIG_DEL`将行为设置为默认行为
+3. 传入一个自定义的函数，将行为设置为该函数
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227143531626-435019971.jpg" style="zoom:30%" alt=""/></div>
+
+事实上，由于较老的Unix系统对信号的处理行为不同，`signal`函数可移植性比较差，而`sigaction`函数具有较好的可移植性，但是调用比较复杂。我们可以通过采用`sigaction`作为实现，定义与`signal`行为相同的函数
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227145337616-472183936.jpg" style="zoom:30%" alt=""/></div>
+
+#### 信号的阻塞
+隐式阻塞机制：标准信号不排队，会被阻塞
+显示阻塞机制：使用 `sigprocmask`对`blocked`位进行修改
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227153213799-1332606960.jpg" style="zoom:30%" alt=""/></div>
+
+注意：对`blocked`的修改，需要自己定义一个`sigset_t`的变量，通过`sigfillset`等函数对其进行构造，在将该变量作为参数传入`sigprocmask`中，实现对`blocked`的修改
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227153501940-141628951.jpg" style="zoom:40%" alt=""/></div>
+
+#### 信号处理程序的编写原则
+信号处理程序与主程序并发运行，享用同样的全局变量，在编写的时候需要保持谨慎，遵守以下的保守原则
+1. 信号处理程序要尽量简单，如只是设置标识符，将处理交给主函数
+2. 采用异步信号安全的函数，这些函数不会被中断，或者是可重入的
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227154149406-605336027.jpg" style="zoom:40%" alt=""/></div>
+
+3.运行前保存，运行后恢复`errno`：信号处理程序可能会修改`errno`的值，主函数中某些函数返回值可能与该值相关
+4.对于所有的信号进行阻塞，然后再恢复原阻塞状态
+5.使用`sig_atomic_t`和`volatile`定义全局变量，`volatile`告诉编译器该变量不稳定，不要放入寄存器中，而是直接内存访问，避免因为编译器过高的优化导致对该变量的行为改变；`sig_atomic_t`保证了该变量读写的原子性，即不会被中断
+6.注意标准信号不排队机制：当内核检查到`pending`位为1时，可能已经接收了多个标准信号，需要对这些信号处理不止一次
+例如以下的对`SIGCHILD`子进程终止的信号处理程序就使用`while`对信号进行多次处理，防止了僵尸进程
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227155835885-986266075.jpg" style="zoom:40%" alt=""/></div>
+
+7.进行流同步：由于信号处理程序和主函数并发运行，当两者之间存在依赖关系时，如主函数先执行`add`操作，信号处理程序执行`del`操作，如果信号处理程序先执行，就可能出错，我们称之为发生了**竞争**。我们可以通过将对应的信号阻塞，当主函数执行完毕后，再取消阻塞，就保证了流同步
+
+#### 显示地等待信号
+在shell执行前台任务时，会一直等待直到该任务结束，即传入`SIGCHILD`信号。我们假设信号处理函数会将pid设置为`wait`函数的返回值，可以写出以下代码
+
+```c
+while (!pid) {
+
+}
+do something...
+```
+但是这段代码的缺陷是它大量执行了循环的判断，而不是子进程，这导致了处理器资源的浪费，考虑如下的代码
+```c
+while (!pid) {
+	pause();
+}
+do something...
+```
+看起来这段代码将当前进程挂起，直到收到了`SIGCHILD`信号。但是如果`SIGCHILD`信号在`if`和`pause`之间发生，就永远不会接收到信号，导致一直被挂起，所以我们需要让该操作具有原子性，不会被中断。可以使用`sigsuspend`函数
+
+```c
+int sigsuspend(const sigset_t *mask);
+```
+该函数暂时地将`blocked`设置为`mask`，并执行`pause`，结束后恢复原来的`blocked`，且该函数具有原子性
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227165642186-606326100.jpg" style="zoom:40%" alt=""/></div>
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227165842950-1346023678.jpg" style="zoom:30%" alt=""/></div>
+
+### 非本地跳转
+
+C提供了一种用户级的异常控制流方式，称为非本地跳转，可以直接从一个正在执行的函数转移到另一个函数，使用`setjmp`，`longjmp`实现
+```c
+#include <setjmp.h>
+
+int setjmp(jmp_buf env);
+int longjmp(jmp_buf env, int retval);
+```
+通过`setjmp`，将当前的调用环境放入`env`中并且返回0；调用`longjmp`，将控制转移到`env`被`setjmp`，调用环境也设置为与`env`中的相同，并使得转移位置的`setjmp`返回值为`retval`
+
+注意`setjmp`不会保存`pending`和`blocked`
+
+通过非本地跳转，我们得以实现嵌套函数的退出
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227171034637-1925034473.jpg" style="zoom:30%" alt=""/></div>
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227171037365-2138275019.jpg" style="zoom:30%" alt=""/></div>
+
+通过`sigsetjmp`，我们得以保存`pending`和`blocked`位，使得跳转后这两个位向量等于设置时的位向量
+
+<div align="center"><img src="https://img2024.cnblogs.com/blog/2454100/202512/2454100-20251227172546929-376266121.jpg" style="zoom:30%" alt=""/></div>
